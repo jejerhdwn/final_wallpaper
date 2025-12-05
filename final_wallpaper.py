@@ -19,23 +19,71 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.b64encode(img_bytes).decode("utf-8")
 
 
-def extract_palette_from_images(images, num_colors: int = 5):
-    """여러(또는 한) 이미지에서 공통 팔레트 추출"""
+def extract_palette_from_images(images, num_colors: int = 5, max_samples: int = 8000):
+    """
+    여러(또는 한) 이미지에서 공통 팔레트 추출 (단순 '많이 나온 색'이 아니라
+    k-means 비슷한 방식으로 색 덩어리들을 중심색으로 뽑아서,
+    서로 다른 색들이 잘 분리되도록 함)
+    """
     all_pixels = []
+
+    # 1) 이미지들을 모아서 픽셀 리스트 만들기
     for image in images:
         img = image.convert("RGB")
-        img = img.resize((130, 130))  # 계산량 줄이기
-        arr = np.array(img)
+        # 너무 크게 하면 계산이 느려져서 적당히 줄이기
+        img = img.resize((220, 220))
+        arr = np.array(img, dtype=np.float32) / 255.0  # 0~1 범위
         pixels = arr.reshape(-1, 3)
-        all_pixels.extend(map(tuple, pixels))
+        all_pixels.append(pixels)
 
     if not all_pixels:
         return np.array([])
 
-    counts = Counter(all_pixels)
-    most_common = counts.most_common(num_colors)
-    colors = np.array([c[0] for c in most_common]) / 255.0  # 0~1 범위
-    return colors
+    pixels = np.vstack(all_pixels)  # (N, 3)
+
+    # 2) 샘플 수가 너무 많으면 일부만 랜덤 샘플링
+    n_pixels = pixels.shape[0]
+    if n_pixels > max_samples:
+        idx = np.random.choice(n_pixels, max_samples, replace=False)
+        pixels = pixels[idx]
+
+    # 3) 간단 k-means (직접 구현)으로 num_colors개 중심색 찾기
+    k = min(num_colors, len(pixels))
+    rng = np.random.default_rng(42)
+
+    # 초기 중심: 픽셀 중에서 랜덤 선택
+    centers = pixels[rng.choice(len(pixels), k, replace=False)]
+
+    for _ in range(12):  # 12번 정도 반복
+        # 각 픽셀이 어떤 중심에 가장 가까운지 할당
+        dists = np.sum((pixels[:, None, :] - centers[None, :, :]) ** 2, axis=2)  # (N, k)
+        labels = np.argmin(dists, axis=1)
+
+        new_centers = []
+        for j in range(k):
+            cluster_pixels = pixels[labels == j]
+            if len(cluster_pixels) == 0:
+                # 비어 있는 클러스터는 기존 중심 유지
+                new_centers.append(centers[j])
+            else:
+                new_centers.append(cluster_pixels.mean(axis=0))
+        new_centers = np.stack(new_centers, axis=0)
+
+        # 변화량이 거의 없으면 조기 종료
+        if np.allclose(new_centers, centers, atol=1e-3):
+            centers = new_centers
+            break
+        centers = new_centers
+
+    # 4) 각 클러스터 크기(픽셀 개수) 기준으로 정렬: 많이 등장한 색을 앞에
+    counts = np.bincount(labels, minlength=k)
+    order = np.argsort(-counts)
+    centers = centers[order]
+
+    # 값 범위 보정
+    centers = np.clip(centers, 0.0, 1.0)
+
+    return centers
 
 
 def plot_palette(colors):
