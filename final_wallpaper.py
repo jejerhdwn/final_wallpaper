@@ -331,29 +331,66 @@ def generate_abstract_background(colors, abstract_level, size=(1024, 1792)):
 def generate_pattern_from_template(pattern_img, colors, brightness_level, saturation_level, size=(1024, 1792)):
     """
     사용자가 업로드한 패턴 이미지를:
-    - 월페이퍼 비율로 크롭/리사이즈
-    - 밝기/채도 슬라이더 반영
-    - 팔레트 대표 색으로 살짝 컬러 오버레이
+    1) 월페이퍼 비율로 크롭/리사이즈
+    2) 거의 무채색(흑백)에 가깝게 낮춘 뒤
+    3) '무드보드에서 추출한 팔레트 전체 색'으로 그라디언트 틴트
+       → 팔레트에 몇 개 색이 있든 전부 사용
     """
     if pattern_img is None:
         return Image.new("RGB", size, (230, 230, 235))
 
+    # 1) 비율 맞추고 리사이즈
     img = crop_to_aspect(pattern_img, size)
 
-    # 밝기/채도 조정
-    b_factor = 0.7 + brightness_level * 0.7
-    s_factor = 0.5 + saturation_level * 0.9
-    img = ImageEnhance.Brightness(img).enhance(b_factor)
-    img = ImageEnhance.Color(img).enhance(s_factor)
+    # 2) 먼저 밝기/채도 조정 + 거의 무채색으로 만들기 (원본 색 죽이기)
+    base_b_factor = 0.8 + brightness_level * 0.6   # 0.8 ~ 1.4
+    img = ImageEnhance.Brightness(img).enhance(base_b_factor)
+    img = ImageEnhance.Color(img).enhance(0.2)     # 거의 흑백 베이스
 
-    # 팔레트 대표 색으로 아주 얇은 컬러 레이어
-    if colors.size > 0:
-        main = colors[0]
-        r, g, b = (main * 255).astype(int)
-        overlay = Image.new("RGBA", img.size, (r, g, b, 40))  # 투명한 레이어
-        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    # 팔레트가 없으면 여기까지만
+    if colors.size == 0:
+        return img
 
-    return img
+    # 3) 팔레트에 있는 색 전체 사용
+    palette = colors.reshape(-1, 3)
+    n = len(palette)
+
+    # 혹시 너무 많으면 적당히 자르기 (원하는 최대 색 개수로 제한 가능)
+    max_colors_for_tint = 8
+    if n > max_colors_for_tint:
+        palette = palette[:max_colors_for_tint]
+        n = len(palette)
+
+    w, h = img.size
+
+    # 4) 세로 방향 그라디언트 오버레이:
+    #    y가 내려갈수록 팔레트의 여러 색을 순서대로 섞으면서 지나가게
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
+
+    for y in range(h):
+        # 0 ~ n-1 사이에서 위치
+        t = y / (h - 1) * max(n - 1, 1)
+        i0 = int(t)
+        i1 = min(i0 + 1, n - 1)
+        frac = t - i0
+
+        c0 = palette[i0]
+        c1 = palette[i1]
+        blended = (1 - frac) * c0 + frac * c1  # 두 색 사이를 부드럽게
+
+        r, g, b = (blended * 255).astype(int)
+
+        # 채도가 높을수록 틴트 강도(알파)를 키움
+        alpha = int(70 + 140 * saturation_level)  # 70 ~ 210 사이
+        draw.line([0, y, w, y], fill=(r, g, b, alpha))
+
+    tinted = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+    # 5) 경계 너무 딱딱하지 않게 아주 약간만 블러
+    tinted = tinted.filter(ImageFilter.GaussianBlur(radius=0.8))
+
+    return tinted
 
 
 # =========================
