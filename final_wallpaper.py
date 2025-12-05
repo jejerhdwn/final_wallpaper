@@ -154,88 +154,169 @@ def generate_solid_wallpaper(colors, size=(1024, 1792)):
     draw.rectangle([0, 0, width, height], fill=color)
     return img
 
+import numpy as np  # 이미 있으면 중복 X
+
+def choose_pattern_colors(colors, mode="two_plus_neutral"):
+    """
+    패턴용으로 팔레트에서 쓸 색만 골라주는 함수.
+    - two_plus_neutral : 무채색 + 메인 2색
+    - one_plus_neutral : 무채색 + 메인 1색
+    - two              : 메인 2색만
+    """
+    if colors.size == 0:
+        # fallback
+        if mode == "one_plus_neutral":
+            return np.array([[0.92, 0.92, 0.92], [0.3, 0.3, 0.3]])
+        else:
+            return np.array([[0.92, 0.92, 0.92], [0.3, 0.3, 0.3], [0.6, 0.6, 0.6]])
+
+    cols = colors.reshape(-1, 3)
+    main1 = cols[0]
+    main2 = cols[1] if cols.shape[0] > 1 else cols[0]
+
+    neutral = np.array([0.92, 0.92, 0.92])  # 살짝 따뜻한 무채색
+
+    if mode == "two":
+        return np.stack([main1, main2], axis=0)
+    elif mode == "one_plus_neutral":
+        return np.stack([neutral, main1], axis=0)
+    elif mode == "two_plus_neutral":
+        return np.stack([neutral, main1, main2], axis=0)
+    else:
+        return cols
+
 
 def generate_stripe_pattern(colors, size=(1024, 1792)):
-    """팔레트 색으로 스트라이프 패턴 생성"""
-    if colors.size == 0:
-        colors = np.array([[0.9, 0.9, 0.9]])
+    """
+    팔레트에서 2색 + 무채색만 뽑아서
+    반복되는 세로 스트라이프 패턴 생성
+    """
+    pattern_colors = choose_pattern_colors(colors, mode="two_plus_neutral")
 
     width, height = size
     img = Image.new("RGB", size)
     draw = ImageDraw.Draw(img)
 
-    num_stripes = len(colors)
-    stripe_width = int(width / num_stripes) if num_stripes > 0 else width
+    num_bands = len(pattern_colors) * 3  # 더 얇고 반복 많은 스트라이프
+    stripe_width = int(width / num_bands) if num_bands > 0 else width
 
-    for i, rgb in enumerate(colors):
+    for i in range(num_bands):
+        rgb = pattern_colors[i % len(pattern_colors)]
         x0 = i * stripe_width
-        x1 = (i + 1) * stripe_width if i < num_stripes - 1 else width
+        x1 = (i + 1) * stripe_width if i < num_bands - 1 else width
         color = tuple((rgb * 255).astype(int))
         draw.rectangle([x0, 0, x1, height], fill=color)
 
+    img = img.filter(ImageFilter.GaussianBlur(radius=0.7))
     return img
+
 
 
 def generate_check_pattern(colors, size=(1024, 1792)):
-    """팔레트 색으로 체크(격자) 패턴 생성"""
-    if colors.size == 0:
-        colors = np.array([[0.9, 0.9, 0.9], [0.7, 0.7, 0.7]])
+    """
+    타탄 체크 느낌:
+    - 배경: 무채색
+    - 메인 2색: 세로/가로 스트라이프
+    - 세로/가로 줄을 반투명으로 겹치면서 교차 부분이 진해지게
+    """
+    pattern_colors = choose_pattern_colors(colors, mode="two_plus_neutral")
+    base_neutral = pattern_colors[0]
+    c1 = pattern_colors[1]
+    c2 = pattern_colors[2] if pattern_colors.shape[0] > 2 else pattern_colors[1]
 
     width, height = size
-    img = Image.new("RGB", size)
-    draw = ImageDraw.Draw(img)
 
-    num_colors = len(colors)
-    num_rows = 10
-    num_cols = 6
+    base_color = tuple((base_neutral * 255).astype(int))
+    img = Image.new("RGB", size, base_color)
 
-    cell_w = int(width / num_cols)
-    cell_h = int(height / num_rows)
+    overlay = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
 
-    for row in range(num_rows):
-        for col in range(num_cols):
-            idx = (row + col) % num_colors
-            rgb = colors[idx]
-            color = tuple((rgb * 255).astype(int))
-            x0 = col * cell_w
-            y0 = row * cell_h
-            x1 = (col + 1) * cell_w
-            y1 = (row + 1) * cell_h
-            draw.rectangle([x0, y0, x1, y1], fill=color)
+    # 반복 간격 (타탄 패턴 모듈)
+    rep_w = width / 8
+    rep_h = height / 10
 
+    c1_rgba_wide = tuple((c1 * 255).astype(int)) + (120,)   # 넓은 줄
+    c2_rgba_thin = tuple((c2 * 255).astype(int)) + (170,)   # 얇은 줄
+
+    # 세로 스트라이프
+    for i in range(10):
+        x_start = i * rep_w
+
+        # 넓은 줄 (c1)
+        x0 = int(x_start + rep_w * 0.1)
+        x1 = int(x_start + rep_w * 0.55)
+        draw.rectangle([x0, 0, x1, height], fill=c1_rgba_wide)
+
+        # 얇은 줄 (c2)
+        x2 = int(x_start + rep_w * 0.65)
+        x3 = int(x_start + rep_w * 0.8)
+        draw.rectangle([x2, 0, x3, height], fill=c2_rgba_thin)
+
+    # 가로 스트라이프
+    for j in range(12):
+        y_start = j * rep_h
+
+        # 넓은 줄 (c1)
+        y0 = int(y_start + rep_h * 0.15)
+        y1 = int(y_start + rep_h * 0.45)
+        draw.rectangle([0, y0, width, y1], fill=c1_rgba_wide)
+
+        # 얇은 줄 (c2)
+        y2 = int(y_start + rep_h * 0.6)
+        y3 = int(y2 + rep_h * 0.18)
+        draw.rectangle([0, y2, width, y3], fill=c2_rgba_thin)
+
+    # 합성 + 약간의 블러로 질감 정리
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    img = img.filter(ImageFilter.GaussianBlur(radius=1.2))
     return img
 
 
-def generate_dot_pattern(colors, size=(1024, 1792)):
-    """팔레트 색으로 도트 패턴 생성"""
-    if colors.size == 0:
-        colors = np.array([[0.95, 0.95, 0.95], [0.2, 0.2, 0.2]])
+def generate_dot_pattern(colors, dot_scale=1.0, size=(1024, 1792)):
+    """
+    도트 패턴:
+    - 배경: 무채색
+    - 도트: 팔레트에서 고른 1색 (또는 2색)
+    - 위/아래 줄이 엇갈리는 패턴
+    - dot_scale로 크기 조절
+    """
+    pattern_colors = choose_pattern_colors(colors, mode="one_plus_neutral")
+    neutral = pattern_colors[0]
+    main = pattern_colors[1]
 
     width, height = size
-    img = Image.new("RGB", size)
+    bg_color = tuple((neutral * 255).astype(int))
+    dot_color = tuple((main * 255).astype(int))
+
+    img = Image.new("RGB", size, bg_color)
     draw = ImageDraw.Draw(img)
 
-    # 배경색은 첫 번째 색
-    bg_color = tuple((colors[0] * 255).astype(int))
-    draw.rectangle([0, 0, width, height], fill=bg_color)
-
-    dot_colors = colors[1:] if len(colors) > 1 else colors
     num_rows = 12
     num_cols = 7
-    radius = int(min(width / (num_cols * 3), height / (num_rows * 3)))
+
+    # 기본 반지름을 dot_scale로 조정
+    base_radius = min(width / (num_cols * 3.5), height / (num_rows * 3.5))
+    radius = int(base_radius * dot_scale)
 
     for row in range(num_rows):
         for col in range(num_cols):
-            idx = (row * num_cols + col) % len(dot_colors)
-            rgb = dot_colors[idx]
-            color = tuple((rgb * 255).astype(int))
-            cx = int((col + 0.5) * width / num_cols)
+            # 홀수 줄은 반 칸 offset → 엇갈리는 도트
+            offset_x = radius if row % 2 == 1 else 0
+
+            cx = int((col + 0.5) * width / num_cols) + offset_x
             cy = int((row + 0.5) * height / num_rows)
+
+            # 화면 바깥으로 나간 점은 건너뛰기
+            if cx + radius < 0 or cx - radius > width:
+                continue
+
             draw.ellipse(
                 [cx - radius, cy - radius, cx + radius, cy + radius],
-                fill=color,
+                fill=dot_color,
             )
 
+    img = img.filter(ImageFilter.GaussianBlur(radius=0.5))
     return img
 
 
@@ -286,39 +367,86 @@ def generate_soft_mood_background(colors, size=(1024, 1792)):
 
 def generate_abstract_background(colors, abstract_level, size=(1024, 1792)):
     """
-    더 추상적인 배경:
-    랜덤 도형(사각형/원)을 많이 배치 → 약간 블러
+    팔레트 색을 사용해서 수채화 느낌의 추상 배경 생성:
+    - 팔레트의 두 색으로 세로 그라디언트 깔고
+    - 반투명한 '물감 블롭'들을 여러 겹으로 얹은 뒤
+    - 전체를 블러 + 살짝 그레인 추가
     """
+    import numpy as np, random
+    from PIL import Image, ImageDraw, ImageFilter
+
+    # 팔레트가 비어 있을 때 대비용 기본 색
     if colors.size == 0:
-        colors = np.array([[0.8, 0.8, 0.85], [0.3, 0.3, 0.4]])
+        colors = np.array([
+            [0.82, 0.82, 0.88],
+            [0.35, 0.40, 0.55],
+            [0.93, 0.86, 0.80],
+        ])
 
     width, height = size
-    img = Image.new("RGB", size, (240, 240, 240))
-    draw = ImageDraw.Draw(img)
 
-    base_shapes = 20
-    extra = int(abstract_level * 40)  # 추상 정도에 따라 도형 수 증가
-    num_shapes = base_shapes + extra
+    # 1) 팔레트에서 위/아래 그라디언트용 두 색 선택
+    base1 = colors[0]
+    base2 = colors[-1] if len(colors) > 1 else colors[0]
 
-    for i in range(num_shapes):
+    h = height
+    w = width
+    grad = np.zeros((h, w, 3), dtype=np.float32)
+    for y in range(h):
+        t = y / (h - 1)
+        grad[y, :, :] = (1 - t) * base1 + t * base2
+
+    grad_uint8 = (grad * 255).clip(0, 255).astype("uint8")
+    img = Image.fromarray(grad_uint8, mode="RGB")
+
+    # 2) 수채화처럼 번지는 반투명 블롭들
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
+
+    base_blobs = 25          # 기본 블롭 개수
+    extra = int(abstract_level * 45)  # 추상 정도에 따라 추가
+    num_blobs = base_blobs + extra
+
+    for i in range(num_blobs):
         rgb = colors[i % len(colors)]
-        color = tuple((rgb * 255).astype(int))
-        shape_type = "rect" if np.random.rand() < 0.5 else "ellipse"
+        r, g, b = (rgb * 255).astype(int)
 
-        w = np.random.randint(int(width * 0.05), int(width * 0.35))
-        h = np.random.randint(int(height * 0.03), int(height * 0.25))
-        x0 = np.random.randint(-int(width * 0.1), int(width * 1.1))
-        y0 = np.random.randint(-int(height * 0.1), int(height * 1.1))
-        x1 = x0 + w
-        y1 = y0 + h
+        # 반투명 알파
+        alpha = random.randint(40, 110)
+        color = (r, g, b, alpha)
 
-        if shape_type == "rect":
-            draw.rectangle([x0, y0, x1, y1], fill=color)
-        else:
-            draw.ellipse([x0, y0, x1, y1], fill=color)
+        # 블롭 크기 (추상 정도에 따라 더 크게)
+        max_radius = int(min(w, h) * (0.25 + 0.25 * abstract_level))
+        min_radius = int(min(w, h) * 0.08)
+        rx = random.randint(min_radius, max_radius)
+        ry = int(rx * random.uniform(0.6, 1.4))
 
-    img = img.filter(ImageFilter.GaussianBlur(radius=2))
-    return img
+        # 위치는 화면 주변까지 넓게 랜덤
+        cx = random.randint(-int(w * 0.1), int(w * 1.1))
+        cy = random.randint(-int(h * 0.1), int(h * 1.1))
+
+        # wobble 느낌: 살짝씩 흔들린 타원 여러 번 겹쳐 그림
+        jitter_times = random.randint(2, 4)
+        for _ in range(jitter_times):
+            jx = int(cx + random.uniform(-rx * 0.15, rx * 0.15))
+            jy = int(cy + random.uniform(-ry * 0.15, ry * 0.15))
+            draw.ellipse([jx - rx, jy - ry, jx + rx, jy + ry], fill=color)
+
+    # 3) 그라디언트 배경 + 블롭 합성
+    composed = Image.alpha_composite(img.convert("RGBA"), overlay)
+
+    # 4) 수채화 번짐처럼 전체 블러
+    blur_radius = 5 + abstract_level * 4  # 추상 정도 높을수록 더 흐릿하게
+    composed = composed.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    # 5) 아주 약한 그레인(노이즈) 추가해서 디지털 티 조금 줄이기
+    arr = np.array(composed.convert("RGB")).astype("int16")
+    noise_strength = 12
+    noise = np.random.randint(-noise_strength, noise_strength + 1, size=arr.shape[:2] + (1,))
+    arr = np.clip(arr + noise, 0, 255).astype("uint8")
+
+    final_img = Image.fromarray(arr, mode="RGB")
+    return final_img
 
 
 # =========================
@@ -339,6 +467,7 @@ def describe_mood_params(brightness, saturation, abstractness):
         f"채도: {level_desc(saturation)}, "
         f"추상 정도: {level_desc(abstractness)}"
     )
+
 
 
 def heuristic_mood_description(colors, brightness, saturation, abstractness):
@@ -429,6 +558,9 @@ brightness_level = st.sidebar.slider("Brightness (밝기)", 0.0, 1.0, 0.6, 0.05)
 saturation_level = st.sidebar.slider("Saturation (채도)", 0.0, 1.0, 0.7, 0.05)
 abstract_level = st.sidebar.slider("Abstractness (추상 정도)", 0.0, 1.0, 0.7, 0.05)
 
+# 🔹 도트 크기 슬라이더 추가
+dot_scale = st.sidebar.slider("Dot size scale (도트 크기)", 0.5, 2.0, 1.0, 0.1)
+
 st.sidebar.markdown("---")
 st.sidebar.write("1. 이미지 업로드 (1장 또는 여러 장) → 2. 생성 버튼 클릭")
 
@@ -510,7 +642,7 @@ if generate_button:
                 elif generation_mode.startswith("Check"):
                     wallpaper_img = generate_check_pattern(adjusted_colors)
                 elif generation_mode.startswith("Dot"):
-                    wallpaper_img = generate_dot_pattern(adjusted_colors)
+                    wallpaper_img = generate_dot_pattern(adjusted_colors, dot_scale=dot_scale)
 
                 if wallpaper_img is not None:
                     buf = io.BytesIO()
