@@ -330,67 +330,111 @@ def generate_abstract_background(colors, abstract_level, size=(1024, 1792)):
 
 def generate_pattern_from_template(pattern_img, colors, brightness_level, saturation_level, size=(1024, 1792)):
     """
-    사용자가 업로드한 패턴 이미지를:
-    1) 월페이퍼 비율로 크롭/리사이즈
-    2) 거의 무채색(흑백)에 가깝게 낮춘 뒤
-    3) '무드보드에서 추출한 팔레트 전체 색'으로 그라디언트 틴트
-       → 팔레트에 몇 개 색이 있든 전부 사용
+    패턴 템플릿 이미지를 팔레트 색으로 '치환'하는 버전.
+
+    1) 패턴 이미지를 월페이퍼 비율로 크롭/리사이즈
+    2) 패턴 이미지의 색들을 K개의 대표색으로 군집화 (k-means 비슷한 방식)
+    3) 각 대표색을 무드보드 팔레트의 색들과 1:1로 매칭해서 치환
+       - 밝기(명도)가 비슷한 순서대로 매칭해서 튀지 않게 맞춤
+    4) 마지막에 전체 밝기/채도 슬라이더 적용
     """
     if pattern_img is None:
         return Image.new("RGB", size, (230, 230, 235))
 
-    # 1) 비율 맞추고 리사이즈
-    img = crop_to_aspect(pattern_img, size)
-
-    # 2) 먼저 밝기/채도 조정 + 거의 무채색으로 만들기 (원본 색 죽이기)
-    base_b_factor = 0.8 + brightness_level * 0.6   # 0.8 ~ 1.4
-    img = ImageEnhance.Brightness(img).enhance(base_b_factor)
-    img = ImageEnhance.Color(img).enhance(0.2)     # 거의 흑백 베이스
-
-    # 팔레트가 없으면 여기까지만
+    # 안전 장치: 팔레트가 없으면 원본만 톤 조정해서 사용
     if colors.size == 0:
+        img = crop_to_aspect(pattern_img, size).convert("RGB")
+        b_factor = 0.8 + brightness_level * 0.6
+        s_factor = 0.5 + saturation_level * 1.0
+        img = ImageEnhance.Brightness(img).enhance(b_factor)
+        img = ImageEnhance.Color(img).enhance(s_factor)
         return img
 
-    # 3) 팔레트에 있는 색 전체 사용
+    # 1) 비율 맞춰서 크롭/리사이즈
+    img = crop_to_aspect(pattern_img, size).convert("RGB")
+    arr = np.array(img, dtype=np.float32) / 255.0   # (H, W, 3)
+    h, w, _ = arr.shape
+    pixels = arr.reshape(-1, 3)                     # (N, 3)
+
+    # 2) 몇 개 색으로 군집화할지 결정
     palette = colors.reshape(-1, 3)
-    n = len(palette)
+    num_palette = len(palette)
 
-    # 혹시 너무 많으면 적당히 자르기 (원하는 최대 색 개수로 제한 가능)
-    max_colors_for_tint = 8
-    if n > max_colors_for_tint:
-        palette = palette[:max_colors_for_tint]
-        n = len(palette)
+    # 너무 많은 색으로 나누면 노이즈처럼 되니까 적당히 제한
+    max_k = 8
+    K = min(num_palette, max_k, len(pixels))
+    if K <= 0:
+        # 어쩔 수 없을 때 fallback
+        return img
 
-    w, h = img.size
+    # == k-means 비슷한 색 군집화 ==
+    rng = np.random.default_rng(0)
+    centers = pixels[rng.choice(len(pixels), K, replace=False)]  # 초기 중심색
 
-    # 4) 세로 방향 그라디언트 오버레이:
-    #    y가 내려갈수록 팔레트의 여러 색을 순서대로 섞으면서 지나가게
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay, "RGBA")
+    for _ in range(10):  # 10번 정도 반복
+        # 각 픽셀과 중심색 사이 거리 계산
+        dists = np.sum((pixels[:, None, :] - centers[None, :, :]) ** 2, axis=2)  # (N, K)
+        labels = np.argmin(dists, axis=1)
 
-    for y in range(h):
-        # 0 ~ n-1 사이에서 위치
-        t = y / (h - 1) * max(n - 1, 1)
-        i0 = int(t)
-        i1 = min(i0 + 1, n - 1)
-        frac = t - i0
+        new_centers = []
+        for j in range(K):
+            cluster_pixels = pixels[labels == j]
+            if len(cluster_pixels) == 0:
+                new_centers.append(centers[j])
+            else:
+                new_centers.append(cluster_pixels.mean(axis=0))
+        new_centers = np.stack(new_centers, axis=0)
 
-        c0 = palette[i0]
-        c1 = palette[i1]
-        blended = (1 - frac) * c0 + frac * c1  # 두 색 사이를 부드럽게
+        if np.allclose(new_centers, centers, atol=1e-3):
+            centers = new_centers
+            break
+        centers = new_centers
 
-        r, g, b = (blended * 255).astype(int)
+    # 3) 중심색의 밝기 순서와 팔레트의 밝기 순서를 맞춰서 매핑
+    def luminance(rgb):
+        r, g, b = rgb
+        return 0.299 * r + 0.587 * g + 0.114 * b
 
-        # 채도가 높을수록 틴트 강도(알파)를 키움
-        alpha = int(70 + 140 * saturation_level)  # 70 ~ 210 사이
-        draw.line([0, y, w, y], fill=(r, g, b, alpha))
+    center_lums = np.array([luminance(c) for c in centers])
+    palette_lums = np.array([luminance(c) for c in palette])
 
-    tinted = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    center_order = np.argsort(center_lums)      # 어두운 → 밝은
+    palette_order = np.argsort(palette_lums)    # 어두운 → 밝은
 
-    # 5) 경계 너무 딱딱하지 않게 아주 약간만 블러
-    tinted = tinted.filter(ImageFilter.GaussianBlur(radius=0.8))
+    mapping = {}  # cluster_index -> target_color(rgb 0~1)
+    num_map = min(len(center_order), len(palette_order))
 
-    return tinted
+    # 밝기 순서대로 1:1 매핑
+    for rank in range(num_map):
+        ci = center_order[rank]
+        pi = palette_order[rank]
+        mapping[ci] = palette[pi]
+
+    # 남는 클러스터가 있으면 팔레트 색을 반복해서 매핑
+    for idx in range(len(centers)):
+        if idx not in mapping:
+            mapping[idx] = palette[idx % len(palette)]
+
+    # 4) 각 픽셀을 매핑된 팔레트 색으로 치환
+    recolored_pixels = np.zeros_like(pixels)
+    for j in range(K):
+        mask = (labels == j)
+        recolored_pixels[mask] = mapping[j]
+
+    recolored_arr = (recolored_pixels.reshape(h, w, 3) * 255.0).clip(0, 255).astype("uint8")
+    recolored_img = Image.fromarray(recolored_arr, mode="RGB")
+
+    # 5) 전체 밝기/채도 슬라이더 마지막으로 반영
+    b_factor = 0.8 + brightness_level * 0.6   # 0.8 ~ 1.4
+    s_factor = 0.5 + saturation_level * 1.0   # 0.5 ~ 1.5
+    recolored_img = ImageEnhance.Brightness(recolored_img).enhance(b_factor)
+    recolored_img = ImageEnhance.Color(recolored_img).enhance(s_factor)
+
+    # 살짝만 블러해서 경계 너무 딱딱한 느낌 줄이기 (옵션)
+    recolored_img = recolored_img.filter(ImageFilter.GaussianBlur(radius=0.4))
+
+    return recolored_img
+
 
 
 # =========================
